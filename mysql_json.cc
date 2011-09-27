@@ -41,8 +41,6 @@ void json_get_deinit(UDF_INIT* initid);
 char* json_get(UDF_INIT* initid, UDF_ARGS* args, char* result, unsigned long* length, char* is_null, char* error);
 }
 
-using namespace std;
-
 my_bool json_get_init(UDF_INIT* initid, UDF_ARGS* args, char* message)
 {
   if (args->arg_count < 1) {
@@ -79,8 +77,8 @@ char* json_get(UDF_INIT* initid, UDF_ARGS* args, char* result, unsigned long* le
   picojson::value value;
   
   { // parse json
-    string err = picojson::parse(value, args->args[0],
-				 args->args[0] + args->lengths[0]);
+    std::string err = picojson::parse(value, args->args[0],
+				      args->args[0] + args->lengths[0]);
     if (! err.empty()) {
       fprintf(stderr, "json_get: invalid json string: %s\n", err.c_str());
       *error = 1;
