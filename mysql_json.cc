@@ -89,14 +89,17 @@ namespace {
     std::string wanted_object_property_;
   public:
     filtered_context(global_context* g_ctx, unsigned arg_index) : g_ctx_(g_ctx), arg_index_(arg_index) {}
-    void set_null() {
+    bool set_null() {
       // out should have been initialized to NULL
+      return true;
     }
-    void set_bool(bool b) {
+    bool set_bool(bool b) {
       _set_if_leaf(picojson::value(b));
+      return true;
     }
-    void set_number(float f) {
+    bool set_number(float f) {
       _set_if_leaf(picojson::value(f));
+      return true;
     }
     template <typename Iter> bool parse_string(picojson::input<Iter>& in) {
       if (_is_leaf()) {
@@ -108,7 +111,7 @@ namespace {
 	return _parse_string(dummy, in);
       }
     }
-    void parse_array_start() {
+    bool parse_array_start() {
       if (_is_leaf()) {
 	_returning_buffered_str() = "array";
       } else {
@@ -143,6 +146,7 @@ namespace {
 	}
 	wanted_array_index_ = idx;
       }
+      return true;
     }
     template <typename Iter> bool parse_array_item(picojson::input<Iter>& in, size_t idx) {
       if (! _is_leaf() && idx == wanted_array_index_) {
@@ -153,7 +157,7 @@ namespace {
 	return _parse(ctx, in);
       }
     }
-    void parse_object_start() {
+    bool parse_object_start() {
       if (_is_leaf()) {
 	_returning_buffered_str() = "object";
       } else {
@@ -182,6 +186,7 @@ namespace {
 	  break;
 	}
       }
+      return true;
     }
     template <typename Iter> bool parse_object_item(picojson::input<Iter>& in, const std::string& key) {
       if (! _is_leaf() && key == wanted_object_property_) {
