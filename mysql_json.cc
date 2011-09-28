@@ -72,107 +72,159 @@ void json_get_deinit(UDF_INIT* initid)
   delete (std::string*)(void*)initid->ptr;
 }
 
+namespace {
+  
+  struct global_context {
+    UDF_ARGS* args;
+    std::string* out;
+    std::string* buff;
+    global_context(UDF_ARGS* a, std::string* b) : args(a), out(NULL), buff(b) {}
+  };
+  
+  class filtered_context {
+  protected:
+    global_context* g_ctx_;
+    unsigned arg_index_;
+    size_t wanted_array_index_;
+    std::string wanted_object_property_;
+  public:
+    filtered_context(global_context* g_ctx, unsigned arg_index) : g_ctx_(g_ctx), arg_index_(arg_index) {}
+    void set_null() {
+      // out should have been initialized to NULL
+    }
+    void set_bool(bool b) {
+      _set_if_leaf(picojson::value(b));
+    }
+    void set_number(float f) {
+      _set_if_leaf(picojson::value(f));
+    }
+    template <typename Iter> bool parse_string(picojson::input<Iter>& in) {
+      if (_is_leaf()) {
+	std::string& s = _returning_buffered_str();
+	s.clear();
+	return _parse_string(s, in);
+      } else {
+	picojson::null_parse_context::dummy_str dummy;
+	return _parse_string(dummy, in);
+      }
+    }
+    void parse_array_start() {
+      if (_is_leaf()) {
+	_returning_buffered_str() = "array";
+      } else {
+	UDF_ARGS* args = g_ctx_->args;
+	size_t idx = 0;
+	switch (args->arg_type[arg_index_]) {
+	case INT_RESULT:
+	  // TODO check overflow / underflow
+	  idx = (size_t)*(long long*)args->args[arg_index_];
+	  break;
+	case REAL_RESULT:
+	  // TODO check overflow / underflow
+	  idx = (size_t)*(double*)args->args[arg_index_];
+	  break;
+	case STRING_RESULT:
+	  idx = 0;
+	  for (const char* p = args->args[arg_index_],
+		 * pMax = p + args->lengths[arg_index_];
+	       p != pMax;
+	       ++p) {
+	    if (isspace(*p)) {
+	    } else if ('0' <= *p && *p <= '9') {
+	      idx = idx * 10 + *p - '0';
+	    } else {
+	      break;
+	    }
+	  }
+	  break;
+	default:
+	  assert(0);
+	  break;
+	}
+	wanted_array_index_ = idx;
+      }
+    }
+    template <typename Iter> bool parse_array_item(picojson::input<Iter>& in, size_t idx) {
+      if (! _is_leaf() && idx == wanted_array_index_) {
+	filtered_context ctx(g_ctx_, arg_index_ + 1);
+	return _parse(ctx, in);
+      } else {
+	picojson::null_parse_context ctx;
+	return _parse(ctx, in);
+      }
+    }
+    void parse_object_start() {
+      if (_is_leaf()) {
+	_returning_buffered_str() = "object";
+      } else {
+	UDF_ARGS* args = g_ctx_->args;
+	switch (args->arg_type[arg_index_]) {
+	case INT_RESULT:
+	  {
+	    char buf[64];
+	    sprintf(buf, "%lld", *(long long*)args->args[arg_index_]);
+	    wanted_object_property_ = buf;
+	  }
+	  break;
+	case REAL_RESULT:
+	  {
+	    char buf[64];
+	    sprintf(buf, "%f", *(double*)args->args[arg_index_]);
+	    wanted_object_property_ = buf;
+	  }
+	  break;
+	case STRING_RESULT:
+	  wanted_object_property_.assign(args->args[arg_index_],
+					 args->lengths[arg_index_]);
+	  break;
+	default:
+	  assert(0);
+	  break;
+	}
+      }
+    }
+    template <typename Iter> bool parse_object_item(picojson::input<Iter>& in, const std::string& key) {
+      if (! _is_leaf() && key == wanted_object_property_) {
+	filtered_context ctx(g_ctx_, arg_index_ + 1);
+	return _parse(ctx, in);
+      } else {
+	picojson::null_parse_context ctx;
+	return _parse(ctx, in);
+      }
+    }
+  private:
+    std::string& _returning_buffered_str() {
+      return *(g_ctx_->out = g_ctx_->buff);
+    }
+    bool _is_leaf() {
+      return arg_index_ == g_ctx_->args->arg_count;
+    }
+    void _set_if_leaf(const picojson::value& v) {
+      if (_is_leaf())
+	_returning_buffered_str() = v.to_str();
+    }
+  };
+}
+
 char* json_get(UDF_INIT* initid, UDF_ARGS* args, char* result, unsigned long* length, char* is_null, char* error)
 {
-  picojson::value value;
+  global_context g_ctx(args, (std::string*)(void*)initid->ptr);
+  filtered_context ctx(&g_ctx, 1);
   
-  { // parse json
-    std::string err = picojson::parse(value, args->args[0],
-				      args->args[0] + args->lengths[0]);
-    if (! err.empty()) {
-      fprintf(stderr, "json_get: invalid json string: %s\n", err.c_str());
-      *error = 1;
-      return NULL;
-    }
+  std::string err;
+  picojson::_parse(ctx, args->args[0], args->args[0] + args->lengths[0],
+		   &err);
+  if (! err.empty()) {
+    fprintf(stderr, "json_get: invalid json string: %s\n", err.c_str());
+    *error = 1;
+    return NULL;
   }
   
-  // track down the object
-  const picojson::value* target = &value;
-  for (unsigned i = 1; i < args->arg_count; ++i) {
-    
-    if (target->is<picojson::array>()) {
-      
-      // is an array, fetch by index
-      size_t idx;
-      switch (args->arg_type[i]) {
-      case INT_RESULT:
-	// TODO check overflow / underflow
-	idx = (size_t)*(long long*)args->args[i];
-	break;
-      case REAL_RESULT:
-	// TODO check overflow / underflow
-	idx = (size_t)*(double*)args->args[i];
-	break;
-      case STRING_RESULT:
-	idx = 0;
-	for (const char* p = args->args[i], * pMax = p + args->lengths[i];
-	     p != pMax;
-	     ++p) {
-	  if (isspace(*p)) {
-	  } else if ('0' <= *p && *p <= '9') {
-	    idx = idx * 10 + *p - '0';
-	  } else {
-	    break;
-	  }
-	}
-	break;
-      default:
-	assert(0);
-	idx = 0; // suppress compiler warning
-	break;
-      }
-      target = &target->get(idx);
-      
-    } else if (target->is<picojson::object>()) {
-      
-      // is an object, fetch by property name
-      std::string key;
-      switch (args->arg_type[i]) {
-      case INT_RESULT:
-	{
-	  char buf[64];
-	  sprintf(buf, "%lld", *(long long*)args->args[i]);
-	  key = buf;
-	}
-	break;
-      case REAL_RESULT:
-	{
-	  char buf[64];
-	  sprintf(buf, "%f", *(double*)args->args[i]);
-	  key = buf;
-	}
-	break;
-      case STRING_RESULT:
-	key.assign(args->args[i], args->lengths[i]);
-	break;
-      default:
-	assert(0);
-	break;
-      }
-      target = &target->get(key);
-      
-    } else {
-      
-      // failed to obtain value, return null
-      target = NULL;
-      break;
-      
-    }
-    
-  }
-  
-  // setup the result and return
-  const char* ret;
-  if (target == NULL || target->is<picojson::null>()) {
-    ret = NULL;
+  if (g_ctx.out == NULL) {
     *length = 0;
     *is_null = 1;
-  } else {
-    std::string* ret_s = (std::string*)(void*)initid->ptr;
-    *ret_s = target->to_str();
-    ret = &(*ret_s)[0];
-    *length = ret_s->size();
-    *is_null = 0;
+    return NULL;
   }
-  return const_cast<char*>(ret);
+  *length = g_ctx.out->size();
+  return &(*g_ctx.out)[0];
 }
