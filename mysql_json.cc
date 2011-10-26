@@ -51,6 +51,7 @@ my_bool json_get_init(UDF_INIT* initid, UDF_ARGS* args, char* message)
     strcpy(message, "json_get: 1st argument should be a string");
     return 1;
   }
+  args->maybe_null[0] = 0;
   // assert (or convert) succeeding arguments to either int or string
   for (unsigned i = 1; i < args->arg_count; ++i) {
     switch (args->arg_type[i]) {
@@ -61,6 +62,7 @@ my_bool json_get_init(UDF_INIT* initid, UDF_ARGS* args, char* message)
       args->arg_type[i] = STRING_RESULT;
       break;
     }
+    args->maybe_null[i] = 0;
   }
   initid->ptr = (char*)(void*)new std::string();
   initid->const_item = 1;
