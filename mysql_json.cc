@@ -51,7 +51,6 @@ my_bool json_get_init(UDF_INIT* initid, UDF_ARGS* args, char* message)
     strcpy(message, "json_get: 1st argument should be a string");
     return 1;
   }
-  args->maybe_null[0] = 0;
   // assert (or convert) succeeding arguments to either int or string
   for (unsigned i = 1; i < args->arg_count; ++i) {
     switch (args->arg_type[i]) {
@@ -62,9 +61,9 @@ my_bool json_get_init(UDF_INIT* initid, UDF_ARGS* args, char* message)
       args->arg_type[i] = STRING_RESULT;
       break;
     }
-    args->maybe_null[i] = 0;
   }
   initid->ptr = (char*)(void*)new std::string();
+  initid->maybe_null = 1;
   initid->const_item = 1;
   return 0;
 }
@@ -215,6 +214,14 @@ namespace {
 
 char* json_get(UDF_INIT* initid, UDF_ARGS* args, char* result, unsigned long* length, char* is_null, char* error)
 {
+  // Return NULL if any args are NULL
+  for (unsigned i = 0; i < args->arg_count; ++i) {
+    if (!args->args[i]) {
+      *is_null = 1;
+      return NULL;
+    }
+  }
+
   global_context g_ctx(args, (std::string*)(void*)initid->ptr);
   filtered_context ctx(&g_ctx, 1);
   
@@ -228,7 +235,6 @@ char* json_get(UDF_INIT* initid, UDF_ARGS* args, char* result, unsigned long* le
   }
   
   if (g_ctx.out == NULL) {
-    *length = 0;
     *is_null = 1;
     return NULL;
   }
