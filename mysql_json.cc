@@ -27,6 +27,8 @@
  * policies, either expressed or implied, of Kazuho Oku.
  */
 
+//#define DEBUG_JSON_GET
+
 extern "C" {
 #include <mysql/mysql.h>
 #include <ctype.h>
@@ -35,10 +37,14 @@ extern "C" {
 #include <string>
 #include "picojson/picojson.h"
 
+#define CONST_ITEM_TRUE		1
+#define CONST_ITEM_CACHED_VALUE	2
+#define CONST_ITEM_CACHED_NULL	3
+
 extern "C" {
 my_bool json_get_init(UDF_INIT* initid, UDF_ARGS* args, char* message);
 void json_get_deinit(UDF_INIT* initid);
-char* json_get(UDF_INIT* initid, UDF_ARGS* args, char* result, unsigned long* length, char* is_null, char* error);
+const char* json_get(UDF_INIT* initid, UDF_ARGS* args, char* result, unsigned long* length, char* is_null, char* error);
 }
 
 my_bool json_get_init(UDF_INIT* initid, UDF_ARGS* args, char* message)
@@ -51,6 +57,10 @@ my_bool json_get_init(UDF_INIT* initid, UDF_ARGS* args, char* message)
     strcpy(message, "json_get: 1st argument should be a string");
     return 1;
   }
+#ifdef DEBUG_JSON_GET
+  fprintf(stderr, "json_get_init(): arg_count=%d maybe_null=%d const_item=%d\n",
+    args->arg_count, initid->maybe_null, initid->const_item);
+#endif
   // assert (or convert) succeeding arguments to either int or string
   for (unsigned i = 1; i < args->arg_count; ++i) {
     switch (args->arg_type[i]) {
@@ -64,12 +74,14 @@ my_bool json_get_init(UDF_INIT* initid, UDF_ARGS* args, char* message)
   }
   initid->ptr = (char*)(void*)new std::string();
   initid->maybe_null = 1;
-  initid->const_item = 1;
   return 0;
 }
 
 void json_get_deinit(UDF_INIT* initid)
 {
+#ifdef DEBUG_JSON_GET
+  fprintf(stderr, "json_get_deinit()\n");
+#endif
   delete (std::string*)(void*)initid->ptr;
 }
 
@@ -212,14 +224,52 @@ namespace {
   };
 }
 
-char* json_get(UDF_INIT* initid, UDF_ARGS* args, char* result, unsigned long* length, char* is_null, char* error)
+const char* json_get(UDF_INIT* initid, UDF_ARGS* args, char* result, unsigned long* length, char* is_null, char* error)
 {
+#ifdef DEBUG_JSON_GET
+  fprintf(stderr, "json_get(");
+#endif
+  // Return cached values based on special values of const_item
+  if (initid->const_item == CONST_ITEM_CACHED_VALUE) {
+    *length = ((std::string*)(void*)initid->ptr)->size();
+#ifdef DEBUG_JSON_GET
+    fprintf(stderr, ") = \"%.*s\" (cached)\n", (int)*length,
+      ((std::string*)(void*)initid->ptr)->data());
+#endif
+    return ((std::string*)(void*)initid->ptr)->data();
+  } else if (initid->const_item == CONST_ITEM_CACHED_NULL) {
+#ifdef DEBUG_JSON_GET
+    fprintf(stderr, ") = NULL (cached)\n");
+#endif
+    *is_null = 1;
+    return NULL;
+  }
+
   // Return NULL if any args are NULL
   for (unsigned i = 0; i < args->arg_count; ++i) {
+#ifdef DEBUG_JSON_GET
+    if (i) {
+      fputc(',', stderr);
+      fputc(' ', stderr);
+    }
+#endif
     if (!args->args[i]) {
       *is_null = 1;
+      if (initid->const_item == CONST_ITEM_TRUE) {
+	initid->const_item = CONST_ITEM_CACHED_NULL;
+      }
+#ifdef DEBUG_JSON_GET
+      fprintf(stderr, "NULL%s) = NULL\n",
+        i + 1 == args->arg_count ? "" : ", ...");
+#endif
       return NULL;
     }
+#ifdef DEBUG_JSON_GET
+    if (args->arg_type[i] == INT_RESULT)
+      fprintf(stderr, "%ld", (size_t)*(long long*)args->args[i]);
+    else
+      fprintf(stderr, "\"%.*s\"", (int)args->lengths[i], args->args[i]);
+#endif
   }
 
   global_context g_ctx(args, (std::string*)(void*)initid->ptr);
@@ -229,15 +279,33 @@ char* json_get(UDF_INIT* initid, UDF_ARGS* args, char* result, unsigned long* le
   picojson::_parse(ctx, args->args[0], args->args[0] + args->lengths[0],
 		   &err);
   if (! err.empty()) {
+#ifdef DEBUG_JSON_GET
+    fprintf(stderr, ") = NULL\n");
+#endif
     fprintf(stderr, "json_get: invalid json string: %s\n", err.c_str());
-    *error = 1;
+    *is_null = 1;
+    if (initid->const_item == CONST_ITEM_TRUE) {
+      initid->const_item = CONST_ITEM_CACHED_NULL;
+    }
     return NULL;
   }
-  
+
   if (g_ctx.out == NULL) {
+#ifdef DEBUG_JSON_GET
+    fprintf(stderr, ") = NULL\n");
+#endif
     *is_null = 1;
+    if (initid->const_item == CONST_ITEM_TRUE) {
+      initid->const_item = CONST_ITEM_CACHED_NULL;
+    }
     return NULL;
   }
   *length = g_ctx.out->size();
-  return &(*g_ctx.out)[0];
+#ifdef DEBUG_JSON_GET
+  fprintf(stderr, ") = \"%.*s\"\n", (int)*length, g_ctx.out->data());
+#endif
+  if (initid->const_item == CONST_ITEM_TRUE) {
+    initid->const_item = CONST_ITEM_CACHED_VALUE;
+  }
+  return g_ctx.out->data();
 }
