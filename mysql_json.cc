@@ -170,6 +170,12 @@ namespace {
 	return _parse(ctx, in);
       }
     }
+    bool parse_array_stop(size_t idx) {
+      if (wanted_array_index_ == (size_t)-1 && _is_preleaf()) {
+	_returning_buffered_str() = std::to_string(idx);
+      }
+      return true;
+    }
     bool parse_object_start() {
       if (_is_leaf()) {
 	_returning_buffered_str() = "object";
@@ -216,6 +222,9 @@ namespace {
     }
     bool _is_leaf() {
       return arg_index_ == g_ctx_->args->arg_count;
+    }
+    bool _is_preleaf() {
+      return arg_index_ == g_ctx_->args->arg_count - 1;
     }
     void _set_if_leaf(const picojson::value& v) {
       if (_is_leaf())
